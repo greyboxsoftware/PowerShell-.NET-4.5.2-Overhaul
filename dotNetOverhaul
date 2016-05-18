@@ -1,0 +1,193 @@
+Write-Host "
+***PLEASE READ***
+This is a .NET 4.5.2 install script that will remove all unapproved versions of .NET framework
+and replace it only with the approved baseline version of 4.5.2. This script will do the following:
+- Test the ping status of the machine and ignore all unpingables
+- Executes a get-wmiobject command to get the installed .NET Version*
+- If the installed version is baseline 4.5.2 then the script will ignore computer and move one
+- If the installed version or lack there of is not 4.5.2 then it will continue to remove and reinstall
+- The following process will happen after the version is determined to be out of compliance
+- test to determine if c:\temp folder exist on remote machine
+- if not the script will create the folder
+- copy three files from \\REMOTESHARE\Example\dotNetCleanup\ directory
+- NDP452-KB2901954-web.exe (This is the .NET web installer)
+- cleanup_tool.exe (This removes all out of compliance .NET Frameworks)
+- removeDotNet.cmd (This will execute the necessary commands needed in automation fashion)
+- run a invoke-command psexec to run the removeDotNet.cmd
+- After command is run (about 15 min) the script will re-verify to give you instant feedback.
+- All output from this is suppressed into a randomly numbered text file in your c:\temp directory so you may
+use it for debugging purposes.
+- This script is designed to have several instances opened at once each pointing to a different source text file
+i.e. c:\temp\computer.txt c:\temp\computer1.txt etc...
+- * NOTE: there is one small bug that has not been resolved at this time and that is less then 1% of computers will
+have WMI failure that locks the script up and force you to close. If this happens document the progress that has
+been completed in your spreadsheet then edit your text file to remove the computers that has already been done and
+the computer that the script got stuck on.
+
+" -ForegroundColor Yellow
+
+#Starting File
+$startingFile = Read-Host "File path to list of computers i.e. c:\temp\computer.txt"
+$extractFile = Get-Content $startingFile
+
+#random number generator to generate random file names to maintain individual instances integrity
+$randomNumber = Get-Random
+$randomNumberWrong = Get-Random
+$randomOutputNumber = Get-Random
+
+#The loop that will perform a action for every computer
+ForEach ($computer in $extractFile) {
+
+#Try statement that tells the script to try something a catch a error. This is for error handling
+Try {
+  #two variables that test connection and store a get-wmiobject output
+  $testConnection = Test-Connection -ComputerName $computer.Trim() -Count 1 -Quiet
+  $getWmiProperty = Get-WmiObject -ComputerName $computer.Trim() -Namespace ROOT\CIMV2\sms -Class SMS_InstalledSoftware -ErrorAction Stop
+
+  #if statement that will execute if $testConnection is true i.e. if the computer is online
+  if ($testConnection -eq 'True') {
+    #Letting the user know what the status of the ping
+    Write-Host "$computer is pingable" -ForegroundColor Green
+
+    #stores the sorted output of the $getWmiProperty
+    $dotNetNameInstalled = $getWmiProperty.ProductName -like '*.NET*'
+
+    #if statement that will run if .NET is eq to 4.5.2
+    if ($dotNetNameInstalled -eq 'Microsoft .NET Framework 4.5.2') {
+      #Let user know that current version of .NET is installed
+      Write-host "$computer has approved .NET framework of $dotNetNameInstalled copying to c:\temp\inCompliance$randomNumber.txt`n" -ForegroundColor Green
+      #copies the computer a randomly generated text file
+      $computer >> "c:\temp\inCompliance$randomNumber.txt"
+    }
+    
+    #else statement that will run if .NET 4.5.2 is not installed
+    else {
+      #Letting user know that .NET is installed
+      Write-Host "$computer unapproved/outdated $dotNetNameInstalled" -ForegroundColor Yellow
+
+      #Asking the user whether they want to attempt remediation on this computer.
+      $installQuestion = Read-Host "Would you like to attempt to bring up to baseline yes[y], or no[n]"
+      
+      #if the answer is yes then the following code will fun
+      if ($installQuestion -eq 'Y' -or $installQuestion -eq 'y') {
+        #Letting the user know a status update
+        Write-Host "Silencing Output of Console temporarily please wait this process can take up to 15 minutes" -ForegroundColor Cyan
+        
+        #storing test-path results
+        $testPath = Test-Path -Path \\$computer\c$\temp
+        
+        #if $testPath is returning true meaning the path exist
+        if ($testPath -eq 'True') {
+            #letting user know a status update
+            Write-Host "Attempting to copy necessary files to remote machine" -ForegroundColor Cyan
+
+            #Copying items from a server share to remote computer
+            Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\NDP452-KB2901954-web.exe" -Destination "\\$computer\c$\Temp\" -Force
+            Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\cleanup_tool.exe" -Destination "\\$computer\c$\Temp\" -Force
+            Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\removeDotNet.cmd" -Destination "\\$computer\c$\Temp" -Force
+        
+            #Letting user know a status update
+            Write-Host "Copy complete attempting repair standby wait 10 seconds while we prepare the install" -ForegroundColor Cyan
+        
+            #Silently Continue if errors are thrown and this is because the psexec command is not native to powershell however it runs properly just messy so I silence it to keep the console clean
+            $ErrorActionPreference = "SilentlyContinue"
+        
+            #After the copy i pause for 10 seconds to ensure copy has finished. I ran into some issues where it hasn't and this seems to solve it.
+            Start-Sleep -Seconds 10
+
+            #Letting user know of status update
+            Write-Host "Installation started standby" -ForegroundColor Cyan
+        
+            #command that runs psexec command
+            Invoke-Command -ScriptBlock {psexec \\$computer cmd /c "c:\Temp\removeDotNet.cmd"} >> "c:\temp\$randomOutputNumber.txt"
+        
+            #Letting user know of status update
+            Write-Host "Installation attempt completed. Please wait 30 seconds to verification" -ForegroundColor Cyan
+        
+            #After the install i sleep the script for 30 seconds to ensure installation task are complete
+            Start-Sleep -Seconds 30
+        
+            #Letting user know of status update
+            Write-Host "Starting verification"-ForegroundColor Cyan
+
+            #gets the wmi property for a second time to ensure installation was complete
+            $getWmiPropertySecond = Get-WmiObject -ComputerName $computer.Trim() -Namespace ROOT\CIMV2\sms -Class SMS_InstalledSoftware
+            $dotNetNameInstalledSecond = $getWmiPropertySecond.ProductName -like '*.NET*'
+        
+            #if the .NET update took the if statement will run
+            if ($dotNetNameInstalledSecond -eq 'Microsoft .NET Framework 4.5.2') {
+                #Letting user know that .NET was sucessfully installed
+                Write-host "$computer has approved .NET framework of $dotNetNameInstalledSecond copying to c:\temp\inCompliance$randomNumber.txt`n" -ForegroundColor Green
+                #writes the computer to randomly generated text file
+                $computer >> "c:\temp\inCompliance$randomNumber.txt"
+                #sets the error action preference to dafault continue because i want to catch any errors all the way to the next psexec command
+                $ErrorActionPreference = "Continue"
+            }
+            #if the .NET update didnt take then the following command is ran
+            else {
+                #Letting user know that .NET was not installed successfully
+                Write-Host "$computer did not take .NET update. Moving computer to c:\temp\outOfBaseline$randomNumberWrong.txt`n" -ForegroundColor Red
+                #copies computer to randomly generated bad file
+                $computer >> "c:\temp\outOfBaseline$randomNumberWrong.txt"
+                #sets the error action preference to dafault continue because i want to catch any errors all the way to the next psexec command
+                $ErrorActionPreference = "Continue"
+            }
+        }
+
+        #The following if statement does exactly what the above if statement does however with the added exception that if the temp folder is not on the remote computer it will create it and if it fails it will let you know and move on
+        if ($testPath -ne 'True') {
+            Write-Host "Attempting to create the directory c:\temp on the remote machine" -ForegroundColor Cyan
+            New-Item -ItemType Directory -Force -Path \\$computer\c$\temp | Out-Null
+            $retestPath = Test-Path -Path \\$computer\c$\temp
+            Write-Host "Testing the newly created directory on the remote machine" -ForegroundColor Cyan
+
+            if ($retestPath -eq 'True') {
+                Write-Host "New directory created sucessfully attempting to copy necessary files to remote machine"
+
+                Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\NDP452-KB2901954-web.exe" -Destination "\\$computer\c$\Temp\" -Force
+                Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\cleanup_tool.exe" -Destination "\\$computer\c$\Temp\" -Force
+                Copy-Item "\\REMOTESHARE\Example\dotNetCleanup\removeDotNet.cmd" -Destination "\\$computer\c$\Temp" -Force
+
+                Write-Host "Copy complete atempting repair standby wait 10 seconds while we prepare the install" -ForegroundColor Cyan
+
+                $ErrorActionPreference = "SilentlyContinue"
+                Start-Sleep -Seconds 10
+
+                Write-Host "Installation started standby" -ForegroundColor Cyan
+
+                Invoke-Command -ScriptBlock {psexec \\$computer cmd /c "c:\Temp\removeDotNet.cmd"} >> "c:\temp\$randomOutputNumber.txt"
+
+                Write-Host "Installation attempt completed. Please wait 30 seconds to verification" -ForegroundColor Cyan
+
+                Start-Sleep -Seconds 30
+
+                Write-Host "Starting verification"-ForegroundColor Cyan
+
+                $getWmiPropertySecond = Get-WmiObject -ComputerName $computer.Trim() -Namespace ROOT\CIMV2\sms -Class SMS_InstalledSoftware
+                $dotNetNameInstalledSecond = $getWmiPropertySecond.ProductName -like '*.NET*'
+
+                if ($dotNetNameInstalledSecond -eq 'Microsoft .NET Framework 4.5.2') {
+                    Write-host "$computer has approved .NET framework of $dotNetNameInstalledSecond copying to c:\temp\inCompliance$randomNumber.txt`n" -ForegroundColor Green
+                    $computer >> "c:\temp\inCompliance$randomNumber.txt"
+                    $ErrorActionPreference = "Continue"
+                }
+                else {
+                    Write-Host "$computer did not take .NET update. Moving computer to c:\temp\outOfBaseline$randomNumberWrong.txt`n" -ForegroundColor Red
+                    $computer >> "c:\temp\outOfBaseline$randomNumberWrong.txt"
+                    $ErrorActionPreference = "Continue"
+                }
+            }
+
+            else {Write-Host "Failed to create directory c:\temp\ on remote machine. $computer will not continue" -BackgroundColor Red}
+        }
+    }
+    else {Write-Host "$computer will skipped!`n" -ForegroundColor Yellow -BackgroundColor Black}
+    }
+}
+#if ping timed out then the following command will run
+if ($testConnection -ne 'True') {
+Write-Host "$computer Ping Timed Out`n" -ForegroundColor Red
+}
+#Any error that is caugh will be sent here where it will briefly display a one line informative error message
+} Catch {Write-Host "$computer failed with ERROR: $_.ExceptionMessage`n" -BackgroundColor Red}
+}
